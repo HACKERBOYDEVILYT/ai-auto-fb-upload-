@@ -7,3 +7,4 @@ telebot>=0.0.5
 tenacity>=8.2.0
 proxy_pool>=1.0.0
 fake-useragent>=1.4.0
+proxy_pool==0.0.3
