@@ -21,7 +21,7 @@ from pathlib import Path
 # Import modules
 from proxy_manager import ProxyManager
 from telegram_bot import TelegramBot
-from credential_stuffer import CredentialStuffer
+from credential_stuffer import credential_stuffer
 
 # Configure logging
 logging.basicConfig(
